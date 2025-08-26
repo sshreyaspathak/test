@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Three.js — Realistic-ish Solar System (single file)</title>
+    <style>
+        html, body { margin: 0; height: 100%; background: radial-gradient(#02030a, #000); color: #e6e6f0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+        #app { position: fixed; inset: 0; }
+        .overlay { position: fixed; left: 12px; bottom: 12px; background: rgba(0,0,0,.45); backdrop-filter: blur(4px); padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.4; box-shadow: 0 8px 24px rgba(0,0,0,.35);}
+        .overlay kbd { background: #111; padding: 2px 6px; border-radius: 6px; border: 1px solid #333; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+        .label { position: absolute; transform: translate(-50%, -50%); pointer-events: none; white-space: nowrap; text-shadow: 0 0 4px #000, 0 0 10px #000; font-weight: 600; font-size: 11px; }
+        .hud { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); font-size: 12px; padding: 6px 10px; background: rgba(0,0,0,.35); border-radius: 999px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+        a { color: #9cd3ff; }
+    </style>
+</head>
+<body>
+<canvas id="app"></canvas>
+<div class="hud" id="hud">Time ×1.0 • Day 0</div>
+<div class="overlay">
+    <div><strong>Controls</strong></div>
+    <div>Orbit: drag • Pan: right-drag • Zoom: wheel</div>
+    <div>Speed: <kbd>+</kbd>/<kbd>-</kbd> • Pause: <kbd>space</kbd> • Focus: click a body</div>
+    <div>GUI: top-right • Reset camera: <kbd>R</kbd></div>
+</div>
+
+<script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.161.0/build/three.module.js';
+    import { OrbitControls } from 'https://unpkg.com/three@0.161.0/examples/jsm/controls/OrbitControls.js';
+    import { EffectComposer } from 'https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/UnrealBloomPass.js';
+    import GUI from 'https://unpkg.com/lil-gui@0.19';
+
+    // Renderer
+    const canvas = document.getElementById('app');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+
+    // Scene & Camera
+    const scene = new THREE.Scene();
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 2e7);
+    camera.position.set(0, 3000, 8000);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.minDistance = 10;
+    controls.maxDistance = 5e5;
+
+    // Postprocessing for glow (sun, bright stars)
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.7, 0.8, 0.0);
+    composer.addPass(renderPass);
+    composer.addPass(bloomPass);
+
+    // Helpers
+    const AU = 1.0; // We'll work in arbitrary units; scale visually pleasing
+    const KM = 1.0;
+    const SCALE = {
+        distance: 1200,   // How far apart orbits are
+        radius: 3.0,      // Planet radius exaggeration
+    };
+
+    // Lighting
+    // Sun will emit light; add faint ambient for shadow lift
+    scene.add(new THREE.AmbientLight(0x0b0f1a, 0.4));
+
+    // Starfield background
+    function makeStars(count = 20000, radius = 2e6) {
+        const geom = new THREE.BufferGeometry();
+        const positions = new Float32Array(count * 3);
+        for (let i = 0; i < count; i++) {
+            const r = Math.cbrt(Math.random()) * radius; // denser far away
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(THREE.MathUtils.randFloatSpread(2));
+            positions[i*3+0] = r * Math.sin(phi) * Math.cos(theta);
+            positions[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+            positions[i*3+2] = r * Math.cos(phi);
+        }
+        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const mat = new THREE.PointsMaterial({ size: 8, sizeAttenuation: true, depthWrite: false, transparent: true, opacity: 0.8 });
+        const pts = new THREE.Points(geom, mat);
+        pts.renderOrder = -5;
+        return pts;
+    }
+    scene.add(makeStars());
+
+    // Simple procedural nebulas (billboard sprites with radial gradient canvas)
+    function makeNebulaTexture(color1 = '#5ab9ff', color2 = '#c77dff') {
+        const c = document.createElement('canvas');
+        c.width = c.height = 512;
+        const g = c.getContext('2d');
+        const grad = g.createRadialGradient(256,256,30, 256,256,256);
+        grad.addColorStop(0, color1);
+        grad.addColorStop(1, 'transparent');
+        g.fillStyle = grad; g.fillRect(0,0,512,512);
+        g.globalCompositeOperation = 'lighter';
+        const grad2 = g.createRadialGradient(200,300,10, 200,300,260);
+        grad2.addColorStop(0, color2);
+        grad2.addColorStop(1, 'transparent');
+        g.fillStyle = grad2; g.fillRect(0,0,512,512);
+        return new THREE.CanvasTexture(c);
+    }
+    function addNebula(pos, scale, rot, colors) {
+        const tex = makeNebulaTexture(...colors);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.5 });
+        const spr = new THREE.Sprite(mat);
+        spr.position.copy(pos);
+        spr.scale.setScalar(scale);
+        spr.rotation = rot;
+        spr.renderOrder = -3;
+        scene.add(spr);
+    }
+    addNebula(new THREE.Vector3(-200000, 80000, -150000), 250000, 0.3, ['#2dd4ff','#a78bfa']);
+    addNebula(new THREE.Vector3( 220000,-50000,  170000), 220000, -0.2, ['#fb7185','#f472b6']);
+
+    // Sun (emissive + point light)
+    const sunGeom = new THREE.SphereGeometry(50 * SCALE.radius, 64, 64);
+    const sunMat  = new THREE.MeshBasicMaterial({ color: 0xffe07a });
+    const sunMesh = new THREE.Mesh(sunGeom, sunMat);
+    scene.add(sunMesh);
+
+    const sunLight = new THREE.PointLight(0xfff1a8, 6.0, 0, 2);
+    scene.add(sunLight);
+
+    // Draw orbit ring helper
+    function orbitRing(distance) {
+        const g = new THREE.RingGeometry(distance-0.2, distance+0.2, 256);
+        // make it face up
+        g.rotateX(-Math.PI/2);
+        const m = new THREE.MeshBasicMaterial({ color: 0x223, side: THREE.DoubleSide, transparent: true, opacity: 0.4 });
+        const mesh = new THREE.Mesh(g, m);
+        mesh.renderOrder = -2;
+        return mesh;
+    }
+
+    // Planet factory
+    const bodies = []; // store everything for updates & picking
+    const labelLayer = document.createElement('div');
+    labelLayer.style.position = 'fixed';
+    labelLayer.style.inset = '0';
+    labelLayer.style.pointerEvents = 'none';
+    document.body.appendChild(labelLayer);
+
+    function makeLabel(text) {
+        const el = document.createElement('div');
+        el.className = 'label';
+        el.textContent = text;
+        labelLayer.appendChild(el);
+        return el;
+    }
+
+    // Realistic-ish orbital data (highly scaled & simplified)
+    // radius in Earth radii; distance in AU; orbitalPeriod in Earth days; rotation in hours
+    const DATA = [
+        { name: 'Mercury', color: 0xb4b2aa, radiusRe: 0.383, distanceAu: 0.39, orbitalDays: 88,   rotationH: 1407.6 },
+        { name: 'Venus',   color: 0xd9c38a, radiusRe: 0.949, distanceAu: 0.72, orbitalDays: 224.7, rotationH: -5832.5 },
+        { name: 'Earth',   color: 0x6ea8ff, radiusRe: 1.000, distanceAu: 1.00, orbitalDays: 365.25, rotationH: 24 },
+        { name: 'Mars',    color: 0xff6b6b, radiusRe: 0.532, distanceAu: 1.52, orbitalDays: 687,   rotationH: 24.6 },
+        { name: 'Jupiter', color: 0xeab676, radiusRe: 11.21, distanceAu: 5.20, orbitalDays: 4331,  rotationH: 9.9 },
+        { name: 'Saturn',  color: 0xf4e2ba, radiusRe: 9.45,  distanceAu: 9.58, orbitalDays: 10747, rotationH: 10.7 },
+        { name: 'Uranus',  color: 0xa7f3d0, radiusRe: 4.01,  distanceAu: 19.20,orbitalDays: 30687, rotationH: -17.2 },
+        { name: 'Neptune', color: 0x7dd3fc, radiusRe: 3.88,  distanceAu: 30.05,orbitalDays: 60190, rotationH: 16.1 },
+        { name: 'Pluto',   color: 0xd1bfa5, radiusRe: 0.186, distanceAu: 39.48,orbitalDays: 90560, rotationH: -153.3 },
+    ];
+
+    const EARTH_RE = 1 * KM; // base unit
+
+    function makePlanet(cfg) {
+        const group = new THREE.Group(); // orbital group (around sun)
+        scene.add(group);
+
+        const distance = cfg.distanceAu * SCALE.distance * AU;
+        const radius = Math.max(0.8, cfg.radiusRe * EARTH_RE * SCALE.radius);
+
+        const geo = new THREE.SphereGeometry(radius, 48, 32);
+        const mat = new THREE.MeshStandardMaterial({ color: cfg.color, roughness: 0.8, metalness: 0.0 });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.castShadow = false; mesh.receiveShadow = false;
+
+        mesh.position.set(distance, 0, 0);
+        group.add(mesh);
+
+        const ring = orbitRing(distance);
+        scene.add(ring);
+
+        const label = makeLabel(cfg.name);
+
+        const body = {
+            type: 'planet', cfg, group, mesh, distance, radius, ring, label,
+            theta: Math.random() * Math.PI * 2, // current orbital angle
+            rotationSpeed: (2*Math.PI) / (cfg.rotationH * 3600), // rad per second (scaled later)
+        };
+
+        // Special rings for Saturn
+        if (cfg.name === 'Saturn') {
+            const rg = new THREE.RingGeometry(radius*1.3, radius*2.0, 128);
+            rg.rotateX(-Math.PI/3);
+            const rm = new THREE.MeshStandardMaterial({ color: 0xdcc9a1, side: THREE.DoubleSide, roughness: 0.8, metalness: 0.0, transparent: true, opacity: 0.7 });
+            const rmesh = new THREE.Mesh(rg, rm);
+            rmesh.position.copy(mesh.position);
+            group.add(rmesh);
+        }
+
+        // Add moons for Earth and Jupiter (simple subsets)
+        if (cfg.name === 'Earth') {
+            body.moons = [ makeMoon({ host: body, name: 'Moon', color: 0xdddddd, radius: radius*0.27, distance: radius*3.5, orbitalDays: 27.32 }) ];
+        }
+        if (cfg.name === 'Jupiter') {
+            body.moons = [
+                makeMoon({ host: body, name: 'Io',      color: 0xf7d28c, radius: radius*0.09, distance: radius*3.5, orbitalDays: 1.77 }),
+                makeMoon({ host: body, name: 'Europa',  color: 0xcfd9e2, radius: radius*0.08, distance: radius*4.8, orbitalDays: 3.55 }),
+                makeMoon({ host: body, name: 'Ganymede',color: 0xb7b1a3, radius: radius*0.13, distance: radius*6.0, orbitalDays: 7.15 }),
+                makeMoon({ host: body, name: 'Callisto',color: 0x9d8c74, radius: radius*0.12, distance: radius*8.0, orbitalDays: 16.69 }),
+            ];
+        }
+
+        bodies.push(body);
+        return body;
+    }
+
+    function makeMoon({ host, name, color, radius, distance, orbitalDays }) {
+        const g = new THREE.Group();
+        host.group.add(g);
+        const geo = new THREE.SphereGeometry(radius, 32, 24);
+        const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0.0 });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(host.mesh.position.x + distance, 0, 0);
+        g.add(mesh);
+
+        const label = makeLabel(name);
+
+        const m = { type: 'moon', name, mesh, group: g, host, radius, distance, theta: Math.random()*Math.PI*2, orbitalDays, label };
+        bodies.push(m);
+        return m;
+    }
+
+    // Create planets
+    const planets = DATA.map(makePlanet);
+
+    // Asteroid belt (instanced for speed)
+    function makeAsteroidBelt({ inner = 2.0, outer = 3.5, count = 1800 }) {
+        const rInner = inner * SCALE.distance * AU;
+        const rOuter = outer * SCALE.distance * AU;
+        const geom = new THREE.IcosahedronGeometry(1.2, 0);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x8b867a, roughness: 1.0, metalness: 0.0 });
+        const mesh = new THREE.InstancedMesh(geom, mat, count);
+        const dummy = new THREE.Object3D();
+        for (let i=0;i<count;i++) {
+            const r = THREE.MathUtils.lerp(rInner, rOuter, Math.random());
+            const theta = Math.random()*Math.PI*2;
+            const y = THREE.MathUtils.randFloatSpread(30); // little thickness
+            const s = Math.random()*3 + 0.5;
+            dummy.position.set(Math.cos(theta)*r, y, Math.sin(theta)*r);
+            dummy.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
+            dummy.scale.setScalar(s);
+            dummy.updateMatrix();
+            mesh.setMatrixAt(i, dummy.matrix);
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        scene.add(mesh);
+        return mesh;
+    }
+    const asteroidBelt = makeAsteroidBelt({ inner: 2.2, outer: 3.4, count: 2200 });
+
+    // Kuiper belt (sparser, larger radius)
+    const kuiperBelt = makeAsteroidBelt({ inner: 35, outer: 45, count: 1400 });
+
+    // Raycaster for picking bodies
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    function pickBody(ev) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        const meshes = bodies.filter(b=>b.mesh).map(b=>b.mesh);
+        const hits = raycaster.intersectObjects(meshes, true);
+        if (hits.length) {
+            const mesh = hits[0].object;
+            const b = bodies.find(bb=>bb.mesh===mesh);
+            if (b) focusOn(b);
+        }
+    }
+    renderer.domElement.addEventListener('click', pickBody);
+
+    // Camera focusing
+    let targetBody = null;
+    function focusOn(b) {
+        targetBody = b;
+        // Move controls target to body position
+        controls.target.copy(b.mesh.getWorldPosition(new THREE.Vector3()));
+    }
+
+    // GUI controls
+    const params = {
+        timeScale: 1.0, // × real-time (our fake seconds)
+        paused: false,
+        showOrbits: true,
+        bloom: 0.7,
+        labels: true,
+        followTarget: true,
+        resetCamera: () => { camera.position.set(0, 3000, 8000); controls.target.set(0,0,0); targetBody = null; }
+    };
+
+    const gui = new GUI({ touchStyles: true });
+    gui.title('Solar System Controls');
+    gui.add(params, 'timeScale', 0, 200, 0.1).name('Time ×');
+    gui.add(params, 'paused').name('Pause');
+    gui.add(params, 'showOrbits').name('Show Orbits').onChange(v=>{
+        planets.forEach(p=>p.ring.visible=v);
+    });
+    gui.add(params, 'labels').name('Show Labels');
+    gui.add(params, 'followTarget').name('Follow Focus');
+    gui.add(params, 'bloom', 0, 2, 0.05).name('Bloom').onChange(v=> bloomPass.strength = v);
+    gui.add(params, 'resetCamera').name('Reset Camera');
+
+    // Keyboard shortcuts
+    addEventListener('keydown', (e)=>{
+        if (e.key === '+') params.timeScale = Math.min(200, params.timeScale + 0.5);
+        if (e.key === '-') params.timeScale = Math.max(0, params.timeScale - 0.5);
+        if (e.key === ' ') params.paused = !params.paused;
+        if (e.key.toLowerCase() === 'r') params.resetCamera();
+    });
+
+    // Update loop
+    let last = performance.now()/1000; // seconds
+    let simDay = 0; // fake day counter
+    const hud = document.getElementById('hud');
+
+    function updateLabels() {
+        bodies.forEach(b=>{
+            if (!b.label) return;
+            b.label.style.display = params.labels ? 'block' : 'none';
+            if (!params.labels) return;
+            const v = b.mesh.getWorldPosition(new THREE.Vector3());
+            v.project(camera);
+            const x = (v.x * 0.5 + 0.5) * innerWidth;
+            const y = (-v.y * 0.5 + 0.5) * innerHeight;
+            b.label.style.left = `${x}px`;
+            b.label.style.top  = `${y}px`;
+        });
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const now = performance.now()/1000;
+        const dt = Math.min(0.1, now - last); // clamp delta
+        last = now;
+
+        controls.update();
+
+        const tscale = params.paused ? 0 : params.timeScale;
+
+        // Spin sun a tad
+        sunMesh.rotation.y += 0.02 * dt * tscale;
+
+        // Update planets & moons
+        planets.forEach(p=>{
+            const omega = (2*Math.PI) / (p.cfg.orbitalDays * 86400); // rad per sec
+            p.theta += omega * dt * 86400 * tscale; // scale by seconds-per-day so GUI feels like days/sec
+            p.mesh.position.set(Math.cos(p.theta)*p.distance, 0, Math.sin(p.theta)*p.distance);
+            // Planet rotation
+            p.mesh.rotation.y += p.rotationSpeed * dt * 86400 * tscale;
+
+            // Moons (if any)
+            if (p.moons) {
+                p.moons.forEach(m=>{
+                    const w = (2*Math.PI) / (m.orbitalDays * 86400);
+                    m.theta += w * dt * 86400 * tscale;
+                    const hostPos = p.mesh.position;
+                    m.mesh.position.set(hostPos.x + Math.cos(m.theta)*m.distance, 0, hostPos.z + Math.sin(m.theta)*m.distance);
+                });
+            }
+        });
+
+        // Optionally ease camera towards target body
+        if (params.followTarget && targetBody) {
+            const targetPos = targetBody.mesh.getWorldPosition(new THREE.Vector3());
+            controls.target.lerp(targetPos, 0.08);
+        }
+
+        // Spin nebulas slightly via material rotation over time
+        scene.traverse(o=>{
+            if (o.isSprite && o.material && o.material.rotation !== undefined) {
+                o.material.rotation += 0.02 * dt;
+            }
+        });
+
+        // HUD
+        simDay += dt * tscale;
+        hud.textContent = `Time ×${params.timeScale.toFixed(1)} • Day ${Math.floor(simDay)}`;
+
+        updateLabels();
+
+        composer.render();
+    }
+
+    animate();
+
+    // Resize
+    addEventListener('resize', ()=>{
+        camera.aspect = innerWidth/innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+        composer.setSize(innerWidth, innerHeight);
+    });
+
+</script>
+</body>
+</html>

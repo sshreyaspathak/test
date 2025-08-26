@@ -1,0 +1,7 @@
+no_f = int(input("Enter no of flight"))
+no_l = int(input("Enter the no of flight"))
+print(no_f)
+print(no_l)
+no_t = int(input("Enter the no of flight"))
+no_f = (no_f+no_l+no_t)
+print(no_f)
